@@ -4,11 +4,12 @@
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
-#include "autoconf.h" // CONFIG_CLOCK_REF_8M
+#include "autoconf.h" // CONFIG_CLOCK_REF_FREQ
 #include "board/armcm_boot.h" // VectorTable
 #include "board/irq.h" // irq_disable
 #include "board/usb_cdc.h" // usb_request_bootloader
 #include "internal.h" // enable_pclock
+#include "sched.h" // sched_main
 
 #define FREQ_PERIPH (CONFIG_CLOCK_FREQ / 2)
 
@@ -123,26 +124,23 @@ usb_request_bootloader(void)
 }
 
 // Main clock setup called at chip startup
-void
+static void
 clock_setup(void)
 {
-    // The SystemInit() code alters VTOR - restore it
-    SCB->VTOR = (uint32_t)VectorTable;
-
     // Configure and enable PLL
     uint32_t cfgr;
-    if (CONFIG_CLOCK_REF_8M) {
-        // Configure 72Mhz PLL from external 8Mhz crystal (HSE)
+    if (!CONFIG_STM32_CLOCK_REF_INTERNAL) {
+        // Configure 72Mhz PLL from external crystal (HSE)
+        uint32_t div = CONFIG_CLOCK_FREQ / CONFIG_CLOCK_REF_FREQ;
         RCC->CR |= RCC_CR_HSEON;
-        cfgr = ((1 << RCC_CFGR_PLLSRC_Pos) | ((9 - 2) << RCC_CFGR_PLLMULL_Pos)
-                | RCC_CFGR_PPRE1_DIV2 | RCC_CFGR_PPRE2_DIV2
-                | RCC_CFGR_ADCPRE_DIV4);
+        cfgr = (1 << RCC_CFGR_PLLSRC_Pos) | ((div - 2) << RCC_CFGR_PLLMULL_Pos);
     } else {
         // Configure 72Mhz PLL from internal 8Mhz oscillator (HSI)
-        cfgr = ((0 << RCC_CFGR_PLLSRC_Pos) | ((18 - 2) << RCC_CFGR_PLLMULL_Pos)
-                | RCC_CFGR_PPRE1_DIV2 | RCC_CFGR_PPRE2_DIV2
-                | RCC_CFGR_ADCPRE_DIV4);
+        uint32_t div2 = (CONFIG_CLOCK_FREQ / 8000000) * 2;
+        cfgr = ((0 << RCC_CFGR_PLLSRC_Pos)
+                | ((div2 - 2) << RCC_CFGR_PLLMULL_Pos));
     }
+    cfgr |= RCC_CFGR_PPRE1_DIV2 | RCC_CFGR_PPRE2_DIV2 | RCC_CFGR_ADCPRE_DIV4;
     RCC->CFGR = cfgr;
     RCC->CR |= RCC_CR_PLLON;
 
@@ -157,6 +155,18 @@ clock_setup(void)
     RCC->CFGR = cfgr | RCC_CFGR_SW_PLL;
     while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != RCC_CFGR_SWS_PLL)
         ;
+}
+
+// Main entry point - called from armcm_boot.c:ResetHandler()
+void
+armcm_main(void)
+{
+    // Run SystemInit() and then restore VTOR
+    SystemInit();
+    SCB->VTOR = (uint32_t)VectorTable;
+
+    // Setup clocks
+    clock_setup();
 
     // Disable JTAG to free PA15, PB3, PB4
     enable_pclock(AFIO_BASE);
@@ -184,4 +194,6 @@ clock_setup(void)
 	// Disable DMA2 enabled by bootloader
 	RCC->AHBENR &= ~RCC_AHBENR_SDIOEN;
     }
+
+    sched_main();
 }
